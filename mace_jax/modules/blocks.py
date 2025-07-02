@@ -6,7 +6,9 @@ import jax
 import jax.numpy as jnp
 
 from .message_passing import MessagePassingConvolution
+from . import message_passing_cuex_translation
 from .symmetric_contraction import SymmetricContraction
+from . import symmetric_contraction_cuex
 
 
 class LinearNodeEmbeddingBlock(hk.Module):
@@ -27,8 +29,8 @@ class LinearNodeEmbeddingBlock(hk.Module):
 
 class LinearReadoutBlock(hk.Module):
     def __init__(
-        self,
-        output_irreps: e3nn.Irreps,
+            self,
+            output_irreps: e3nn.Irreps,
     ):
         super().__init__()
         self.output_irreps = output_irreps
@@ -40,12 +42,12 @@ class LinearReadoutBlock(hk.Module):
 
 class NonLinearReadoutBlock(hk.Module):
     def __init__(
-        self,
-        hidden_irreps: e3nn.Irreps,
-        output_irreps: e3nn.Irreps,
-        *,
-        activation: Optional[Callable] = None,
-        gate: Optional[Callable] = None,
+            self,
+            hidden_irreps: e3nn.Irreps,
+            output_irreps: e3nn.Irreps,
+            *,
+            activation: Optional[Callable] = None,
+            gate: Optional[Callable] = None,
     ):
         super().__init__()
         self.hidden_irreps = hidden_irreps
@@ -67,12 +69,12 @@ class NonLinearReadoutBlock(hk.Module):
 
 class RadialEmbeddingBlock:
     def __init__(
-        self,
-        *,
-        r_max: float,
-        avg_r_min: Optional[float] = None,
-        basis_functions: Callable[[jnp.ndarray], jnp.ndarray],
-        envelope_function: Callable[[jnp.ndarray], jnp.ndarray],
+            self,
+            *,
+            r_max: float,
+            avg_r_min: Optional[float] = None,
+            basis_functions: Callable[[jnp.ndarray], jnp.ndarray],
+            envelope_function: Callable[[jnp.ndarray], jnp.ndarray],
     ):
         self.r_max = r_max
         self.avg_r_min = avg_r_min
@@ -80,8 +82,8 @@ class RadialEmbeddingBlock:
         self.envelope_function = envelope_function
 
     def __call__(
-        self,
-        edge_lengths: jnp.ndarray,  # [n_edges]
+            self,
+            edge_lengths: jnp.ndarray,  # [n_edges]
     ) -> e3nn.IrrepsArray:  # [n_edges, num_basis]
         def func(lengths):
             basis = self.basis_functions(lengths, self.r_max)  # [n_edges, num_basis]
@@ -105,16 +107,22 @@ class RadialEmbeddingBlock:
 
 class EquivariantProductBasisBlock(hk.Module):
     def __init__(
-        self,
-        target_irreps: e3nn.Irreps,
-        correlation: int,
-        num_species: int,
-        symmetric_tensor_product_basis: bool = True,
-        off_diagonal: bool = False,
+            self,
+            target_irreps: e3nn.Irreps,
+            correlation: int,
+            num_species: int,
+            symmetric_tensor_product_basis: bool = True,
+            off_diagonal: bool = False,
+            implementation = "e3j",
     ) -> None:
         super().__init__()
+
+        Contraction = SymmetricContraction \
+            if implementation == "e3j" \
+            else symmetric_contraction_cuex.SymmetricContraction
+
         self.target_irreps = e3nn.Irreps(target_irreps)
-        self.symmetric_contractions = SymmetricContraction(
+        self.symmetric_contractions = Contraction(
             keep_irrep_out={ir for _, ir in self.target_irreps},
             correlation=correlation,
             num_species=num_species,
@@ -124,11 +132,11 @@ class EquivariantProductBasisBlock(hk.Module):
         )
 
     def __call__(
-        self,
-        node_feats: e3nn.IrrepsArray,  # [n_nodes, feature * irreps]
-        node_specie: jnp.ndarray,  # [n_nodes, ] int
+            self,
+            node_feats: e3nn.IrrepsArray,  # [n_nodes, feature * irreps]
+            node_specie: jnp.ndarray,  # [n_nodes, ] int
     ) -> e3nn.IrrepsArray:
-        node_feats = node_feats.mul_to_axis().remove_nones()
+        node_feats = node_feats.mul_to_axis().remove_nones()  # n_node, mul, irreps
         node_feats = self.symmetric_contractions(node_feats, node_specie)
         node_feats = node_feats.axis_to_mul()
         return e3nn.haiku.Linear(self.target_irreps)(node_feats)
@@ -136,34 +144,40 @@ class EquivariantProductBasisBlock(hk.Module):
 
 class InteractionBlock(hk.Module):
     def __init__(
-        self,
-        *,
-        target_irreps: e3nn.Irreps,
-        avg_num_neighbors: float,
-        max_ell: int,
-        activation: Callable,
+            self,
+            *,
+            target_irreps: e3nn.Irreps,
+            avg_num_neighbors: float,
+            max_ell: int,
+            activation: Callable,
+            implementation="e3j",
     ) -> None:
         super().__init__()
         self.target_irreps = target_irreps
         self.avg_num_neighbors = avg_num_neighbors
         self.max_ell = max_ell
         self.activation = activation
+        self.implementation = implementation
 
     def __call__(
-        self,
-        vectors: e3nn.IrrepsArray,  # [n_edges, 3]
-        node_feats: e3nn.IrrepsArray,  # [n_nodes, irreps]
-        radial_embedding: jnp.ndarray,  # [n_edges, radial_embedding_dim]
-        senders: jnp.ndarray,  # [n_edges, ]
-        receivers: jnp.ndarray,  # [n_edges, ]
+            self,
+            vectors: e3nn.IrrepsArray,  # [n_edges, 3]
+            node_feats: e3nn.IrrepsArray,  # [n_nodes, irreps]
+            radial_embedding: jnp.ndarray,  # [n_edges, radial_embedding_dim]
+            senders: jnp.ndarray,  # [n_edges, ]
+            receivers: jnp.ndarray,  # [n_edges, ]
     ) -> Tuple[e3nn.IrrepsArray, e3nn.IrrepsArray]:
         assert node_feats.ndim == 2
         assert vectors.ndim == 2
         assert radial_embedding.ndim == 2
 
+        Convolution = (MessagePassingConvolution
+                       if self.implementation == "e3j"
+                       else message_passing_cuex_translation.MessagePassingConvolution)
+
         node_feats = e3nn.haiku.Linear(node_feats.irreps, name="linear_up")(node_feats)
 
-        node_feats = MessagePassingConvolution(
+        node_feats = Convolution(
             self.avg_num_neighbors, self.target_irreps, self.max_ell, self.activation
         )(vectors, node_feats, radial_embedding, senders, receivers)
 

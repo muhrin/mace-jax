@@ -29,7 +29,8 @@ class MessagePassingConvolution(hk.Module):
     ) -> e3nn.IrrepsArray:
         assert node_feats.ndim == 2
 
-        messages = node_feats[senders]
+        # Scatter
+        messages = node_feats[senders]  # (nedges, nnode_feats)
 
         messages = e3nn.concatenate(
             [

@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import jraph
 import numpy as np
-from e3nn_jax.util import assert_equivariant
+from e3nn_jax.utils import assert_equivariant
 
 from mace_jax import modules
 from mace_jax.modules import MACE, SymmetricContraction
@@ -28,40 +28,42 @@ def test_symmetric_contraction():
 
 # TODO fix this test
 def test_mace():
-    atomic_energies = np.array([1.0, 3.0], dtype=float)
+    num_species = 2
 
     @hk.without_apply_rng
     @hk.transform
     def model(graph):
+        positions = graph.nodes.positions
+        receivers = graph.receivers
+        senders = graph.senders
+        receivers_unit_shifts = graph.edges.shifts
+        vectors = (positions[receivers] + receivers_unit_shifts) - positions[senders]
+        species = graph.nodes.species
+
         return MACE(
             r_max=5,
-            num_bessel=8,
-            num_deriv_in_zero=5,
-            num_deriv_in_one=2,
+            radial_basis=lambda r, r_max: e3nn.bessel(r, 8, r_max),
+            radial_envelope=lambda r, r_max: e3nn.poly_envelope(5 - 1, 2, r_max)(r),
             max_ell=2,
-            interaction_cls=modules.interaction_classes[
-                "AgnosticResidualInteractionBlock"
-            ],
-            interaction_cls_first=modules.interaction_classes[
-                "AgnosticResidualInteractionBlock"
-            ],
             num_interactions=5,
+            num_species=num_species,
             hidden_irreps=e3nn.Irreps("32x0e"),
             readout_mlp_irreps=e3nn.Irreps("16x0e"),
             gate=jax.nn.silu,
-            atomic_energies=atomic_energies,
             avg_num_neighbors=8,
             correlation=3,
-        )(graph)
+            output_irreps="0e",
+        )(vectors, species, senders, receivers)
 
-    Node = namedtuple("Node", ["positions", "attrs"])
+    Node = namedtuple("Node", ["positions", "species", "attrs"])
     Edge = namedtuple("Edge", ["shifts"])
     Globals = namedtuple("Globals", ["cell"])
 
     graph = jraph.GraphsTuple(
         nodes=Node(
             positions=jnp.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]),
-            attrs=jax.nn.one_hot(jnp.array([0, 1]), 2),
+            species=jnp.array([0, 1]),
+            attrs=jax.nn.one_hot(jnp.array([0, 1]), num_species),
         ),
         edges=Edge(shifts=jnp.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])),
         globals=Globals(cell=None),
@@ -74,10 +76,12 @@ def test_mace():
     w = model.init(jax.random.PRNGKey(0), graph)
 
     def wrapper(positions):
+        species = jnp.array([0, 1])
         graph = jraph.GraphsTuple(
             nodes=Node(
                 positions=positions.array,
-                attrs=jax.nn.one_hot(jnp.array([0, 1]), 2),
+                species=species,
+                attrs=jax.nn.one_hot(species, num_species),
             ),
             edges=Edge(shifts=jnp.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])),
             globals=Globals(cell=None),
@@ -90,7 +94,7 @@ def test_mace():
         return e3nn.IrrepsArray("0e", energy)
 
     positions = e3nn.normal("1o", jax.random.PRNGKey(1), (2,))
-    assert_equivariant(wrapper, jax.random.PRNGKey(1), args_in=(positions,))
+    assert_equivariant(wrapper, jax.random.PRNGKey(1), positions)
 
 
 if __name__ == "__main__":

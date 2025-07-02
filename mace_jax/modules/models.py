@@ -1,6 +1,6 @@
 import functools
 import math
-from typing import Callable, Optional, Union
+from typing import Callable, Optional, Union, Literal
 
 import e3nn_jax as e3nn
 import haiku as hk
@@ -27,31 +27,35 @@ except ImportError:
 
 class MACE(hk.Module):
     def __init__(
-        self,
-        *,
-        output_irreps: e3nn.Irreps,  # Irreps of the output, default 1x0e
-        r_max: float,
-        num_interactions: int,  # Number of interactions (layers), default 2
-        hidden_irreps: e3nn.Irreps,  # 256x0e or 128x0e + 128x1o
-        readout_mlp_irreps: e3nn.Irreps,  # Hidden irreps of the MLP in last readout, default 16x0e
-        avg_num_neighbors: float,
-        num_species: int,
-        num_features: int = None,  # Number of features per node, default gcd of hidden_irreps multiplicities
-        avg_r_min: float = None,
-        radial_basis: Callable[[jnp.ndarray], jnp.ndarray],
-        radial_envelope: Callable[[jnp.ndarray], jnp.ndarray],
-        # Number of zero derivatives at small and large distances, default 4 and 2
-        # If both are None, it uses a smooth C^inf envelope function
-        max_ell: int = 3,  # Max spherical harmonic degree, default 3
-        epsilon: Optional[float] = None,
-        correlation: int = 3,  # Correlation order at each layer (~ node_features^correlation), default 3
-        gate: Callable = jax.nn.silu,  # activation function
-        soft_normalization: Optional[float] = None,
-        symmetric_tensor_product_basis: bool = True,
-        off_diagonal: bool = False,
-        interaction_irreps: Union[str, e3nn.Irreps] = "o3_restricted",  # or o3_full
-        node_embedding: hk.Module = LinearNodeEmbeddingBlock,
-        skip_connection_first_layer: bool = False,
+            self,
+            *,
+            output_irreps: e3nn.Irreps,  # Irreps of the output, default 1x0e
+            r_max: float,
+            num_interactions: int,  # Number of interactions (layers), default 2
+            hidden_irreps: e3nn.Irreps,  # 256x0e or 128x0e + 128x1o
+            readout_mlp_irreps: e3nn.Irreps,
+            # Hidden irreps of the MLP in last readout, default 16x0e
+            avg_num_neighbors: float,
+            num_species: int,
+            num_features: int = None,
+            # Number of features per node, default gcd of hidden_irreps multiplicities
+            avg_r_min: float = None,
+            radial_basis: Callable[[jnp.ndarray], jnp.ndarray],
+            radial_envelope: Callable[[jnp.ndarray], jnp.ndarray],
+            # Number of zero derivatives at small and large distances, default 4 and 2
+            # If both are None, it uses a smooth C^inf envelope function
+            max_ell: int = 3,  # Max spherical harmonic degree, default 3
+            epsilon: Optional[float] = None,
+            correlation: int = 3,
+            # Correlation order at each layer (~ node_features^correlation), default 3
+            gate: Callable = jax.nn.silu,  # activation function
+            soft_normalization: Optional[float] = None,
+            symmetric_tensor_product_basis: bool = False,
+            off_diagonal: bool = False,
+            interaction_irreps: Union[str, e3nn.Irreps] = "o3_restricted",  # or o3_full
+            node_embedding: hk.Module = LinearNodeEmbeddingBlock,
+            skip_connection_first_layer: bool = False,
+            implementation="e3j",
     ):
         super().__init__()
 
@@ -91,6 +95,7 @@ class MACE(hk.Module):
         self.max_ell = max_ell
         self.soft_normalization = soft_normalization
         self.skip_connection_first_layer = skip_connection_first_layer
+        self.implementation = implementation
 
         # Embeddings
         self.node_embedding = node_embedding(
@@ -104,12 +109,12 @@ class MACE(hk.Module):
         )
 
     def __call__(
-        self,
-        vectors: e3nn.IrrepsArray,  # [n_edges, 3]
-        node_specie: jnp.ndarray,  # [n_nodes] int between 0 and num_species-1
-        senders: jnp.ndarray,  # [n_edges]
-        receivers: jnp.ndarray,  # [n_edges]
-        node_mask: Optional[jnp.ndarray] = None,  # [n_nodes] only used for profiling
+            self,
+            vectors: e3nn.IrrepsArray,  # [n_edges, 3]
+            node_specie: jnp.ndarray,  # [n_nodes] int between 0 and num_species-1
+            senders: jnp.ndarray,  # [n_edges]
+            receivers: jnp.ndarray,  # [n_edges]
+            node_mask: Optional[jnp.ndarray] = None,  # [n_nodes] only used for profiling
     ) -> e3nn.IrrepsArray:
         assert vectors.ndim == 2 and vectors.shape[1] == 3
         assert node_specie.ndim == 1
@@ -160,6 +165,7 @@ class MACE(hk.Module):
                 off_diagonal=self.off_diagonal,
                 soft_normalization=self.soft_normalization,
                 skip_connection_first_layer=self.skip_connection_first_layer,
+                implementation=self.implementation,
                 name=f"layer_{i}",
             )(
                 vectors,
@@ -177,29 +183,30 @@ class MACE(hk.Module):
 
 class MACELayer(hk.Module):
     def __init__(
-        self,
-        *,
-        first: bool,
-        last: bool,
-        num_features: int,
-        interaction_irreps: e3nn.Irreps,
-        hidden_irreps: e3nn.Irreps,
-        activation: Callable,
-        num_species: int,
-        epsilon: Optional[float],
-        name: Optional[str],
-        # InteractionBlock:
-        max_ell: int,
-        avg_num_neighbors: float,
-        # EquivariantProductBasisBlock:
-        correlation: int,
-        symmetric_tensor_product_basis: bool,
-        off_diagonal: bool,
-        soft_normalization: Optional[float],
-        # ReadoutBlock:
-        output_irreps: e3nn.Irreps,
-        readout_mlp_irreps: e3nn.Irreps,
-        skip_connection_first_layer: bool = False,
+            self,
+            *,
+            first: bool,
+            last: bool,
+            num_features: int,
+            interaction_irreps: e3nn.Irreps,
+            hidden_irreps: e3nn.Irreps,
+            activation: Callable,
+            num_species: int,
+            epsilon: Optional[float],
+            name: Optional[str],
+            # InteractionBlock:
+            max_ell: int,
+            avg_num_neighbors: float,
+            # EquivariantProductBasisBlock:
+            correlation: int,
+            symmetric_tensor_product_basis: bool,
+            off_diagonal: bool,
+            soft_normalization: Optional[float],
+            # ReadoutBlock:
+            output_irreps: e3nn.Irreps,
+            readout_mlp_irreps: e3nn.Irreps,
+            skip_connection_first_layer: bool = False,
+            implementation: Literal["e3j", "cuex_translation"] = "e3j",
     ) -> None:
         super().__init__(name=name)
 
@@ -220,16 +227,17 @@ class MACELayer(hk.Module):
         self.off_diagonal = off_diagonal
         self.soft_normalization = soft_normalization
         self.skip_connection_first_layer = skip_connection_first_layer
+        self.implementation = implementation
 
     def __call__(
-        self,
-        vectors: e3nn.IrrepsArray,  # [n_edges, 3]
-        node_feats: e3nn.IrrepsArray,  # [n_nodes, irreps]
-        node_specie: jnp.ndarray,  # [n_nodes] int between 0 and num_species-1
-        radial_embedding: jnp.ndarray,  # [n_edges, radial_embedding_dim]
-        senders: jnp.ndarray,  # [n_edges]
-        receivers: jnp.ndarray,  # [n_edges]
-        node_mask: Optional[jnp.ndarray] = None,  # [n_nodes] only used for profiling
+            self,
+            vectors: e3nn.IrrepsArray,  # [n_edges, 3]
+            node_feats: e3nn.IrrepsArray,  # [n_nodes, irreps]
+            node_specie: jnp.ndarray,  # [n_nodes] int between 0 and num_species-1
+            radial_embedding: jnp.ndarray,  # [n_edges, radial_embedding_dim]
+            senders: jnp.ndarray,  # [n_edges]
+            receivers: jnp.ndarray,  # [n_edges]
+            node_mask: Optional[jnp.ndarray] = None,  # [n_nodes] only used for profiling
     ):
         if node_mask is None:
             node_mask = jnp.ones(node_specie.shape[0], dtype=jnp.bool_)
@@ -252,6 +260,7 @@ class MACELayer(hk.Module):
             avg_num_neighbors=self.avg_num_neighbors,
             max_ell=self.max_ell,
             activation=self.activation,
+            implementation=self.implementation,
         )(
             vectors=vectors,
             node_feats=node_feats,
@@ -286,6 +295,7 @@ class MACELayer(hk.Module):
             num_species=self.num_species,
             symmetric_tensor_product_basis=self.symmetric_tensor_product_basis,
             off_diagonal=self.off_diagonal,
+            implementation=self.implementation,
         )(node_feats=node_feats, node_specie=node_specie)
 
         node_feats = profile(
@@ -293,7 +303,6 @@ class MACELayer(hk.Module):
         )
 
         if self.soft_normalization is not None:
-
             def phi(n):
                 n = n / self.soft_normalization
                 return 1.0 / (1.0 + n * e3nn.sus(n))

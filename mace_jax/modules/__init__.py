@@ -1,3 +1,5 @@
+from . import message_passing_cuex_translation
+
 from .blocks import (
     InteractionBlock,
     EquivariantProductBasisBlock,
@@ -25,4 +27,5 @@ __all__ = [
     "MessagePassingConvolution",
     "MACE",
     "SymmetricContraction",
+    "message_passing_cuex_translation",
 ]

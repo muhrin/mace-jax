@@ -38,7 +38,7 @@ class SymmetricContraction(hk.Module):
         self.symmetric_tensor_product_basis = symmetric_tensor_product_basis
         self.off_diagonal = off_diagonal
 
-    def __call__(self, input: e3nn.IrrepsArray, index: jnp.ndarray) -> e3nn.IrrepsArray:
+    def __call__(self, inputs: e3nn.IrrepsArray, index: jnp.ndarray) -> e3nn.IrrepsArray:
         def fn(input: e3nn.IrrepsArray, index: jnp.ndarray):
             # - This operation is parallel on the feature dimension (but each feature has its own parameters)
             # This operation is an efficient implementation of
@@ -91,6 +91,8 @@ class SymmetricContraction(hk.Module):
                         w * (mul**-0.5) ** self.gradient_normalization
                     )  # normalize weights
 
+                    print(mul, ir_out, input.shape[0])
+
                     if ir_out not in out:
                         out[ir_out] = (
                             "special",
@@ -127,12 +129,14 @@ class SymmetricContraction(hk.Module):
             )
 
         # Treat batch indices using vmap
-        shape = jnp.broadcast_shapes(input.shape[:-2], index.shape)
-        input = input.broadcast_to(shape + input.shape[-2:])
+        shape = jnp.broadcast_shapes(inputs.shape[:-2], index.shape)
+        inputs = inputs.broadcast_to(shape + inputs.shape[-2:])
         index = jnp.broadcast_to(index, shape)
 
         fn_mapped = fn
-        for _ in range(input.ndim - 2):
+        for _ in range(inputs.ndim - 2):
             fn_mapped = hk.vmap(fn_mapped, split_rng=False)
 
-        return fn_mapped(input, index)
+        return fn_mapped(inputs, index)
+
+
