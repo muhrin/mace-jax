@@ -1,3 +1,5 @@
+import os
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -6,7 +8,10 @@ import haiku as hk
 
 import e3nn_jax as e3j
 
-IMPLEMENTATION = "e3j"
+import json
+
+IMPLEMENTATION = os.environ["IMPLEMENTATION"]
+FILENAME = "benchmark_results.json"
 
 
 def main():
@@ -15,6 +20,7 @@ def main():
     num_graphs = 100
     avg_num_neighbors = 20
 
+    # model_size = os.environ.get("MODEL_SIZE", "MP-S")
     model_size = "MP-S"
 
     if "MP" in model_size:
@@ -24,20 +30,33 @@ def main():
         num_atoms = 4_000
         num_edges = 70_000
 
+    num_features = int(os.environ["NUM_FEATURES"])
+
+    # num_features = {
+    #     "MP-S": 128,
+    #     "MP-M": 128,
+    #     "MP-L": 128,
+    #     "OFF-S": 64 + 32,
+    #     "OFF-M": 128,
+    #     "OFF-L": 128 + 64,
+    # }[model_size]
+
+    hidden_irreps = {
+        "MP-S": "0e",
+        "MP-M": "0e+1o",
+        "MP-L": "0e+1o+2e",
+        "OFF-S": "0e",
+        "OFF-M": "0e+1o",
+        "OFF-L": "0e+1o+2e",
+    }[model_size]
+
     @hk.without_apply_rng
     @hk.transform
     def model(batch_dict):
         return modules.MACE(
             output_irreps="1x0e",
             num_interactions=2,
-            num_features={
-                "MP-S": 128,
-                "MP-M": 128,
-                "MP-L": 128,
-                "OFF-S": 64 + 32,
-                "OFF-M": 128,
-                "OFF-L": 128 + 64,
-            }[model_size],
+            num_features=num_features,
             num_species=num_species,
             max_ell=3,
             correlation=3,
@@ -46,16 +65,7 @@ def main():
             readout_mlp_irreps=e3j.Irreps("16x0e"),
             # num_radial_basis=8,
             interaction_irreps=e3j.Irreps("0e+1o+2e+3o"),
-            hidden_irreps=e3j.Irreps(
-                {
-                    "MP-S": "0e",
-                    "MP-M": "0e+1o",
-                    "MP-L": "0e+1o+2e",
-                    "OFF-S": "0e",
-                    "OFF-M": "0e+1o",
-                    "OFF-L": "0e+1o+2e",
-                }[model_size],
-            ),
+            hidden_irreps=e3j.Irreps(hidden_irreps),
             # offsets=np.zeros(num_species),
             r_max=5.0,
             avg_num_neighbors=avg_num_neighbors,
@@ -99,7 +109,7 @@ def main():
     opt_state = opt.init(w)
     step_count = 0
 
-    print_footprint(w)
+    # print_footprint(w)
 
     # Training
     @jax.jit
@@ -126,15 +136,41 @@ def main():
     for i in range(10):
         (w, opt_state) = step(w, opt_state, batch_dict, target_E, target_F)
         step_count += 1
-        print_footprint(w)
+        # print_footprint(w)
 
     jax.block_until_ready(w)
     t1 = time.perf_counter()
 
-    runtime_per_step = 1e3 * (t1 - t0) / 10
-    print(f"{runtime_per_step:.0f} ms per step")
+    delta_t = t1 - t0
+    runtime_per_step = 1e3 * (delta_t) / 10
 
-    print_footprint(w)
+    try:
+        with open(FILENAME) as fd:
+            results = json.load(fd)
+    except FileNotFoundError:
+        results = {}
+
+    lmax = e3j.Irreps(hidden_irreps).lmax
+    res = {
+        f"mul_{num_features}_lmax_2": {
+            "runtimes": {
+                "forward": delta_t,
+            },
+            "memory_mb": 12345.6789
+        }
+    }
+
+    convention = {"e3j": "bm_tp_e3j", "cuex": "bm_tp_e3jtocuex"}
+    name = convention.get(IMPLEMENTATION, "bm_tp_e3jtocuex")
+    impl = results.get(name, {})
+    impl.update(res)
+    results[name] = impl
+    with open(FILENAME, "w") as fd:
+        json.dump(results, fd, indent=4)
+
+    print(f"{num_features},{runtime_per_step:.0f},{hidden_irreps}")
+
+    # print_footprint(w)
 
 
 def print_footprint(w):

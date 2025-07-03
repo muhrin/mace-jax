@@ -105,7 +105,6 @@ class SymmetricContraction(hk.Module):
                         stddev=(mul ** -0.5) ** (1.0 - self.gradient_normalization)
                     ),
                 )
-                print(mul, ir_out, x.shape[1])
 
                 weights.append(w)
                 # w = (

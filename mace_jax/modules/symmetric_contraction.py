@@ -91,8 +91,6 @@ class SymmetricContraction(hk.Module):
                         w * (mul**-0.5) ** self.gradient_normalization
                     )  # normalize weights
 
-                    print(mul, ir_out, input.shape[0])
-
                     if ir_out not in out:
                         out[ir_out] = (
                             "special",
